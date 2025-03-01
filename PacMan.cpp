@@ -260,6 +260,15 @@ void* ThreadPacMan(void* p)
         pthread_cond_signal(&condScore);
 
       }
+      else if(tab[l][c].presence == BONUS)
+      {
+        pthread_mutex_lock(&mutexScore);
+        score = score + 30;
+        printf("Score: %d\n",score);
+        pthread_mutex_unlock(&mutexScore);
+        pthread_cond_signal(&condScore);
+
+      }
     }
     
     setTab(l, c, PACMAN, pthread_self());
