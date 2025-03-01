@@ -38,16 +38,21 @@ typedef struct {
 } S_CASE;
 
 
-int dir = GAUCHE;
+int dir, nbPacGom = 0, niveau = 1, delai = 300, score = 0;
 S_CASE tab[NB_LIGNE][NB_COLONNE];
-pthread_mutex_t mutexTab;
-pthread_t tidPacMan, tidEvent;
+pthread_mutex_t mutexDelai = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutexTab = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutexNbPacGom = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t condNbPacGom = PTHREAD_COND_INITIALIZER;
+
+pthread_t tidPacMan, tidEvent, tidPacGom;
 
 void DessineGrilleBase();
 void Attente(int milli);
 void setTab(int l, int c, int presence = VIDE, pthread_t tid = 0);
 void* ThreadPacMan(void* p);
 void* ThreadEvent(void* p);
+void* ThreadPacGom(void* p);
 
 void handler_SIGINT(int sig);
 void handler_SIGHUP(int sig);
@@ -60,7 +65,6 @@ int main(int argc,char* argv[])
   sigset_t mask;
   struct sigaction sigAct;
   char ok;
-  pthread_mutex_init(&mutexTab,NULL);
   
 
 
@@ -76,9 +80,9 @@ int main(int argc,char* argv[])
   }
 
   DessineGrilleBase();
+  pthread_create(&tidPacGom,NULL,ThreadPacGom,NULL);
   pthread_create(&tidPacMan,NULL,ThreadPacMan,NULL);
   pthread_create(&tidEvent,NULL,ThreadEvent,NULL);
-  
   
   pthread_join(tidEvent,NULL);
   
@@ -156,6 +160,7 @@ void DessineGrilleBase() {
 void* ThreadPacMan(void* p)
 {
   //on arme les signaux pour les déplacements
+   
   struct sigaction A, B, C, D;
   sigset_t mask;
   A.sa_handler = handler_SIGINT;
@@ -180,7 +185,7 @@ void* ThreadPacMan(void* p)
   sigemptyset(&D.sa_mask);
   D.sa_handler = handler_SIGUSR2;
   sigaction(SIGUSR2, &D, NULL);
-
+  
   //on preparer le vecteur de signaux a bloquer
   sigemptyset(&mask);
   sigaddset(&mask, SIGINT);
@@ -211,7 +216,30 @@ void* ThreadPacMan(void* p)
     { 
       l = newL;
       c = newC;
-    } 
+
+      //incrémentation du score et décrémentation de nbPacGom
+      if (tab[l][c].presence == PACGOM)
+      {
+        score++;
+        pthread_mutex_lock(&mutexNbPacGom);
+        nbPacGom--;
+        printf("Score: %d\n",score);
+        printf("nb PacGom: %d\n",nbPacGom);
+        pthread_mutex_unlock(&mutexNbPacGom);
+        pthread_cond_signal(&condNbPacGom);
+
+      }
+      else if(tab[l][c].presence == SUPERPACGOM)
+      {
+        score = score + 5;
+        pthread_mutex_lock(&mutexNbPacGom);
+        nbPacGom--;
+        printf("Score: %d\n",score);
+        printf("nb PacGom: %d\n",nbPacGom);
+        pthread_mutex_unlock(&mutexNbPacGom);
+        pthread_cond_signal(&condNbPacGom);
+      }
+    }
     
     setTab(l, c, PACMAN, pthread_self());
     pthread_mutex_unlock(&mutexTab);
@@ -219,12 +247,14 @@ void* ThreadPacMan(void* p)
 
     DessinePacMan(l, c, dir);
     
-    //section critique Attente
+    //section critique Attente et variable global delai
+    pthread_mutex_lock(&mutexDelai);
     pthread_sigmask(SIG_BLOCK, &mask, NULL);
-    printf("Attente de 300 millisecondes...\n");
-    Attente(300);
+    printf("Attente de %d millisecondes...\n", delai);
+    Attente(delai);
     pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
-
+    pthread_mutex_unlock(&mutexDelai);
+    
   }
 }
 void* ThreadEvent(void* p)
@@ -265,7 +295,75 @@ void* ThreadEvent(void* p)
 
   pthread_exit(0);
 }
+void* ThreadPacGom(void* p)
+{
 
+  do
+  {
+    
+    DessineChiffre(14,22,niveau);
+
+    for(int i = 0; i < 21; i++)
+    {
+      for(int j = 0; j < 17; j++)
+      {
+        if(tab[i][j].presence == 0)
+        {
+          if((i == 15 && j == 8) || (i == 8 && j == 8) || (i == 9 && j == 8));
+          else
+          {
+            tab[i][j].presence = PACGOM;
+            DessinePacGom(i, j);
+            pthread_mutex_lock(&mutexNbPacGom);
+            nbPacGom++;
+            pthread_mutex_unlock(&mutexNbPacGom);
+
+          }
+        }
+      }
+    }
+    printf("nb PacGom: %d\n",nbPacGom);
+    DessineChiffre(12,22,nbPacGom/100);
+    DessineChiffre(12,23,(nbPacGom/10)%10);
+    DessineChiffre(12,24,nbPacGom%10);
+
+    tab[2][1].presence = SUPERPACGOM;
+    tab[2][15].presence = SUPERPACGOM;
+    tab[15][1].presence = SUPERPACGOM;
+    tab[15][15].presence = SUPERPACGOM;
+    DessineSuperPacGom(2,1);
+    DessineSuperPacGom(2,15);
+    DessineSuperPacGom(15,1);
+    DessineSuperPacGom(15,15);
+    
+    //attente du signal de pacman pour afficher le nbPacGom restant
+    pthread_mutex_lock(&mutexNbPacGom);
+    while(nbPacGom)
+    {
+      pthread_cond_wait(&condNbPacGom,&mutexNbPacGom);
+      DessineChiffre(12,22,nbPacGom/100);
+      DessineChiffre(12,23,(nbPacGom/10)%10);
+      DessineChiffre(12,24,nbPacGom%10);
+
+    }
+    pthread_mutex_unlock(&mutexNbPacGom);
+
+    //on incrémente le niveau de difficulté
+    niveau++;
+    DessineChiffre(14,22,niveau);
+    pthread_mutex_lock(&mutexDelai);
+    delai = delai/2;
+    pthread_mutex_unlock(&mutexDelai);
+
+  } while (niveau);
+  pthread_exit(0);
+
+}
+
+
+//*********************************************************************************************
+
+//handlers des signaux
 void handler_SIGINT(int sig) { dir = GAUCHE; }
 void handler_SIGHUP(int sig) { dir = DROITE; }
 void handler_SIGUSR1(int sig) { dir = HAUT; }
