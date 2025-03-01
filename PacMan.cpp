@@ -37,29 +37,32 @@ typedef struct {
   pthread_t tid;
 } S_CASE;
 
-
+//variables Globales
 int dir, nbPacGom = 0, niveau = 1, delai = 300, score = 0;
 S_CASE tab[NB_LIGNE][NB_COLONNE];
 bool MAJScore = false;
 
+//Threads,mutex et variables de condition
 pthread_mutex_t mutexDelai = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexTab = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexNbPacGom = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexScore = PTHREAD_MUTEX_INITIALIZER;
-
 pthread_cond_t condNbPacGom = PTHREAD_COND_INITIALIZER;
 pthread_cond_t condScore = PTHREAD_COND_INITIALIZER;
 
-pthread_t tidPacMan, tidEvent, tidPacGom, tidScore;
-
-void DessineGrilleBase();
-void Attente(int milli);
-void setTab(int l, int c, int presence = VIDE, pthread_t tid = 0);
+pthread_t tidPacMan, tidEvent, tidPacGom, tidScore, tidBonus;
 void* ThreadPacMan(void* p);
 void* ThreadEvent(void* p);
 void* ThreadPacGom(void* p);
 void* ThreadScore(void* p);
+void* ThreadBonus(void* p);
 
+//Fonctions
+void DessineGrilleBase();
+void Attente(int milli);
+void setTab(int l, int c, int presence = VIDE, pthread_t tid = 0);
+
+//Handlers de signaux
 void handler_SIGINT(int sig);
 void handler_SIGHUP(int sig);
 void handler_SIGUSR1(int sig);
@@ -90,6 +93,8 @@ int main(int argc,char* argv[])
   pthread_create(&tidPacMan,NULL,ThreadPacMan,NULL);
   pthread_create(&tidEvent,NULL,ThreadEvent,NULL);
   pthread_create(&tidScore,NULL,ThreadScore,NULL);
+  pthread_create(&tidBonus,NULL,ThreadBonus,NULL);
+
   
   pthread_join(tidEvent,NULL);
   
@@ -328,7 +333,7 @@ void* ThreadPacGom(void* p)
           if((i == 15 && j == 8) || (i == 8 && j == 8) || (i == 9 && j == 8));
           else
           {
-            tab[i][j].presence = PACGOM;
+            setTab(i,j,PACGOM);
             DessinePacGom(i, j);
             pthread_mutex_lock(&mutexNbPacGom);
             nbPacGom++;
@@ -343,10 +348,10 @@ void* ThreadPacGom(void* p)
     DessineChiffre(12,23,(nbPacGom/10)%10);
     DessineChiffre(12,24,nbPacGom%10);
 
-    tab[2][1].presence = SUPERPACGOM;
-    tab[2][15].presence = SUPERPACGOM;
-    tab[15][1].presence = SUPERPACGOM;
-    tab[15][15].presence = SUPERPACGOM;
+    setTab(2,1,SUPERPACGOM);
+    setTab(2,15,SUPERPACGOM);
+    setTab(15,1,SUPERPACGOM);
+    setTab(15,15,SUPERPACGOM);
     DessineSuperPacGom(2,1);
     DessineSuperPacGom(2,15);
     DessineSuperPacGom(15,1);
@@ -373,7 +378,7 @@ void* ThreadPacGom(void* p)
 
   } while (niveau);
   pthread_exit(0);
-
+  
 }
 
 void* ThreadScore(void* p)
@@ -398,6 +403,29 @@ void* ThreadScore(void* p)
   }
   pthread_mutex_unlock(&mutexScore);
   
+  pthread_exit(0);
+
+}
+
+void* ThreadBonus(void* p)
+{
+  int tempsAttente, i, j;
+  while(1)
+  {
+    //on génère un int random entre 10 et 20
+    tempsAttente = (rand() % 11 + 10) * 1000;
+    Attente(tempsAttente);
+    
+    //on place le bonus sur une case vide de maniere random
+    if(tab[i = rand()%22][j = rand()%18].presence == 0)
+    {
+      setTab(i,j,BONUS);
+      DessineBonus(i, j);
+      Attente(10000);
+      if(tab[i][j].presence == BONUS) setTab(i,j,VIDE);
+    }
+  
+  }
   pthread_exit(0);
 
 }
