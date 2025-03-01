@@ -38,11 +38,12 @@ typedef struct {
 } S_CASE;
 
 S_CASE tab[NB_LIGNE][NB_COLONNE];
+pthread_mutex_t mutexTab;
 
 void DessineGrilleBase();
 void Attente(int milli);
 void setTab(int l, int c, int presence = VIDE, pthread_t tid = 0);
-
+void* fctPacMan(void* p);
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 int main(int argc,char* argv[])
 {
@@ -50,7 +51,11 @@ int main(int argc,char* argv[])
   sigset_t mask;
   struct sigaction sigAct;
   char ok;
- 
+  pthread_t tidPacMan;
+  pthread_mutex_init(&mutexTab,NULL);
+
+
+
   srand((unsigned)time(NULL));
 
   // Ouverture de la fenetre graphique
@@ -63,15 +68,8 @@ int main(int argc,char* argv[])
   }
 
   DessineGrilleBase();
-
-  // Exemple d'utilisation de GrilleSDL et Ressources --> code a supprimer
-  DessinePacMan(17,7,GAUCHE);  // Attention !!! tab n'est pas modifie --> a vous de le faire !!!
-  DessineChiffre(14,25,9);
-  DessineFantome(5,9,ROUGE,DROITE);
-  DessinePacGom(7,4);
-  DessineSuperPacGom(9,5);
-  DessineFantomeComestible(13,15);
-  DessineBonus(5,15);
+  pthread_create(&tidPacMan,NULL,fctPacMan,NULL);
+  
   
   ok = 0;
   while(!ok)
@@ -85,11 +83,18 @@ int main(int argc,char* argv[])
         case 'q' : ok = 1; break;
         case KEY_RIGHT : printf("Fleche droite !\n"); break;
         case KEY_LEFT : printf("Fleche gauche !\n"); break;
+        case KEY_UP : printf("Fleche haut !\n"); break;
+        case KEY_DOWN : printf("Fleche bas !\n"); break;
+
       }
     }
   }
   printf("Attente de 1500 millisecondes...\n");
   Attente(1500);
+
+  
+  
+  
   // -------------------------------------------------------------------------
   
   // Fermeture de la fenetre
@@ -97,6 +102,7 @@ int main(int argc,char* argv[])
   FermetureFenetreGraphique();
   printf("OK\n"); fflush(stdout);
 
+  printf("Thread PacMan terminé\n");
   exit(0);
 }
 
@@ -153,3 +159,33 @@ void DessineGrilleBase() {
 }
 
 //*********************************************************************************************
+
+void* fctPacMan(void* p)
+{
+  int dir = GAUCHE;
+  int L = LENTREE, C = CENTREE, newL, newC;
+
+  while (1)
+  {
+    pthread_mutex_lock(&mutexTab);
+    setTab(L, C);
+    EffaceCarre(L, C);
+    newL = L;
+    newC = C;
+    if(dir == GAUCHE)newC--;
+    
+    if (tab[newL][newC].presence != MUR)
+    { 
+      L = newL;
+      C = newC;
+    } 
+    
+    setTab(L, C, PACMAN, pthread_self());
+    pthread_mutex_unlock(&mutexTab);
+
+    DessinePacMan(L, C, dir);
+    printf("Attente de 300 millisecondes...\n");
+    
+    Attente(300);
+  }
+}
