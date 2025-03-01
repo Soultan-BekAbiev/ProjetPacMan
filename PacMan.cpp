@@ -37,23 +37,31 @@ typedef struct {
   pthread_t tid;
 } S_CASE;
 
+
+int dir = GAUCHE;
 S_CASE tab[NB_LIGNE][NB_COLONNE];
 pthread_mutex_t mutexTab;
+pthread_t tidPacMan, tidEvent;
 
 void DessineGrilleBase();
 void Attente(int milli);
 void setTab(int l, int c, int presence = VIDE, pthread_t tid = 0);
-void* fctPacMan(void* p);
+void* ThreadPacMan(void* p);
+void* ThreadEvent(void* p);
+
+void handler_SIGINT(int sig);
+void handler_SIGHUP(int sig);
+void handler_SIGUSR1(int sig);
+void handler_SIGUSR2(int sig);
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 int main(int argc,char* argv[])
 {
-  EVENT_GRILLE_SDL event;
   sigset_t mask;
   struct sigaction sigAct;
   char ok;
-  pthread_t tidPacMan;
   pthread_mutex_init(&mutexTab,NULL);
-
+  
 
 
   srand((unsigned)time(NULL));
@@ -68,27 +76,12 @@ int main(int argc,char* argv[])
   }
 
   DessineGrilleBase();
-  pthread_create(&tidPacMan,NULL,fctPacMan,NULL);
+  pthread_create(&tidPacMan,NULL,ThreadPacMan,NULL);
+  pthread_create(&tidEvent,NULL,ThreadEvent,NULL);
   
   
-  ok = 0;
-  while(!ok)
-  {
-    event = ReadEvent();
-    if (event.type == CROIX) ok = 1;
-    if (event.type == CLAVIER)
-    {
-      switch(event.touche)
-      {
-        case 'q' : ok = 1; break;
-        case KEY_RIGHT : printf("Fleche droite !\n"); break;
-        case KEY_LEFT : printf("Fleche gauche !\n"); break;
-        case KEY_UP : printf("Fleche haut !\n"); break;
-        case KEY_DOWN : printf("Fleche bas !\n"); break;
-
-      }
-    }
-  }
+  pthread_join(tidEvent,NULL);
+  
   printf("Attente de 1500 millisecondes...\n");
   Attente(1500);
 
@@ -160,32 +153,120 @@ void DessineGrilleBase() {
 
 //*********************************************************************************************
 
-void* fctPacMan(void* p)
+void* ThreadPacMan(void* p)
 {
-  int dir = GAUCHE;
-  int L = LENTREE, C = CENTREE, newL, newC;
+  //on arme les signaux pour les déplacements
+  struct sigaction A, B, C, D;
+  sigset_t mask;
+  A.sa_handler = handler_SIGINT;
+  A.sa_flags = 0;
+  sigemptyset(&A.sa_mask);
+  sigaction(SIGINT, &A, NULL);
+  
+  B.sa_handler = handler_SIGINT;
+  B.sa_flags = 0;
+  sigemptyset(&B.sa_mask);
+  B.sa_handler = handler_SIGHUP;
+  sigaction(SIGHUP, &B, NULL);
+  
+  C.sa_handler = handler_SIGINT;
+  C.sa_flags = 0;
+  sigemptyset(&C.sa_mask);
+  C.sa_handler = handler_SIGUSR1;
+  sigaction(SIGUSR1, &C, NULL);
+  
+  D.sa_handler = handler_SIGINT;
+  D.sa_flags = 0;
+  sigemptyset(&D.sa_mask);
+  D.sa_handler = handler_SIGUSR2;
+  sigaction(SIGUSR2, &D, NULL);
+
+  //on preparer le vecteur de signaux a bloquer
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGINT);
+  sigaddset(&mask, SIGHUP);
+  sigaddset(&mask, SIGUSR1);
+  sigaddset(&mask, SIGUSR2);
+  int l = LENTREE, c = CENTREE, newL, newC;
 
   while (1)
   {
+    //section critique direction et tableau tab
     pthread_mutex_lock(&mutexTab);
-    setTab(L, C);
-    EffaceCarre(L, C);
-    newL = L;
-    newC = C;
-    if(dir == GAUCHE)newC--;
+    pthread_sigmask(SIG_BLOCK, &mask, NULL);
+
+    setTab(l, c);
+    EffaceCarre(l, c);
+
+    //on verifie la nouvelle position avec la présence d'un mur
+    newL = l;
+    newC = c;
+
+    if (dir == GAUCHE) newC--;
+    else if (dir == DROITE) newC++;
+    else if (dir == HAUT) newL--;
+    else if (dir == BAS) newL++;
     
     if (tab[newL][newC].presence != MUR)
     { 
-      L = newL;
-      C = newC;
+      l = newL;
+      c = newC;
     } 
     
-    setTab(L, C, PACMAN, pthread_self());
+    setTab(l, c, PACMAN, pthread_self());
     pthread_mutex_unlock(&mutexTab);
+    pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
 
-    DessinePacMan(L, C, dir);
-    printf("Attente de 300 millisecondes...\n");
+    DessinePacMan(l, c, dir);
     
+    //section critique Attente
+    pthread_sigmask(SIG_BLOCK, &mask, NULL);
+    printf("Attente de 300 millisecondes...\n");
     Attente(300);
+    pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
+
   }
 }
+void* ThreadEvent(void* p)
+{
+  EVENT_GRILLE_SDL event;
+
+  int ok;
+  ok = 0;
+  while(!ok)
+  {
+    event = ReadEvent();
+    if (event.type == CROIX) ok = 1;
+    if (event.type == CLAVIER)
+    {
+      switch(event.touche)
+      {
+        case 'q' : ok = 1; break;
+        case KEY_RIGHT : 
+                        printf("Fleche droite !\n");
+                        pthread_kill(tidPacMan, SIGHUP);
+        break;
+        case KEY_LEFT : 
+                        printf("Fleche gauche !\n");
+                        pthread_kill(tidPacMan, SIGINT);
+        break;
+        case KEY_UP : 
+                        printf("Fleche haut !\n");
+                        pthread_kill(tidPacMan, SIGUSR1);
+        break;
+        case KEY_DOWN :
+                        printf("Fleche bas !\n");
+                        pthread_kill(tidPacMan, SIGUSR2);
+        break;
+
+      }
+    }
+  }
+
+  pthread_exit(0);
+}
+
+void handler_SIGINT(int sig) { dir = GAUCHE; }
+void handler_SIGHUP(int sig) { dir = DROITE; }
+void handler_SIGUSR1(int sig) { dir = HAUT; }
+void handler_SIGUSR2(int sig) { dir = BAS; }
