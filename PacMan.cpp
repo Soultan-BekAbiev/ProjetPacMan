@@ -40,12 +40,17 @@ typedef struct {
 
 int dir, nbPacGom = 0, niveau = 1, delai = 300, score = 0;
 S_CASE tab[NB_LIGNE][NB_COLONNE];
+bool MAJScore = false;
+
 pthread_mutex_t mutexDelai = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexTab = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexNbPacGom = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t condNbPacGom = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t mutexScore = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_t tidPacMan, tidEvent, tidPacGom;
+pthread_cond_t condNbPacGom = PTHREAD_COND_INITIALIZER;
+pthread_cond_t condScore = PTHREAD_COND_INITIALIZER;
+
+pthread_t tidPacMan, tidEvent, tidPacGom, tidScore;
 
 void DessineGrilleBase();
 void Attente(int milli);
@@ -53,6 +58,7 @@ void setTab(int l, int c, int presence = VIDE, pthread_t tid = 0);
 void* ThreadPacMan(void* p);
 void* ThreadEvent(void* p);
 void* ThreadPacGom(void* p);
+void* ThreadScore(void* p);
 
 void handler_SIGINT(int sig);
 void handler_SIGHUP(int sig);
@@ -83,6 +89,7 @@ int main(int argc,char* argv[])
   pthread_create(&tidPacGom,NULL,ThreadPacGom,NULL);
   pthread_create(&tidPacMan,NULL,ThreadPacMan,NULL);
   pthread_create(&tidEvent,NULL,ThreadEvent,NULL);
+  pthread_create(&tidScore,NULL,ThreadScore,NULL);
   
   pthread_join(tidEvent,NULL);
   
@@ -220,24 +227,33 @@ void* ThreadPacMan(void* p)
       //incrémentation du score et décrémentation de nbPacGom
       if (tab[l][c].presence == PACGOM)
       {
-        score++;
+        pthread_mutex_lock(&mutexScore);
         pthread_mutex_lock(&mutexNbPacGom);
+        score++;
         nbPacGom--;
         printf("Score: %d\n",score);
         printf("nb PacGom: %d\n",nbPacGom);
         pthread_mutex_unlock(&mutexNbPacGom);
+        pthread_mutex_unlock(&mutexScore);
         pthread_cond_signal(&condNbPacGom);
+        pthread_cond_signal(&condScore);
+
+        
 
       }
       else if(tab[l][c].presence == SUPERPACGOM)
       {
-        score = score + 5;
+        pthread_mutex_lock(&mutexScore);
         pthread_mutex_lock(&mutexNbPacGom);
+        score = score + 5;
         nbPacGom--;
         printf("Score: %d\n",score);
         printf("nb PacGom: %d\n",nbPacGom);
         pthread_mutex_unlock(&mutexNbPacGom);
+        pthread_mutex_unlock(&mutexScore);
         pthread_cond_signal(&condNbPacGom);
+        pthread_cond_signal(&condScore);
+
       }
     }
     
@@ -360,7 +376,31 @@ void* ThreadPacGom(void* p)
 
 }
 
+void* ThreadScore(void* p)
+{
+  //affichage du score 0 au lancement
+  DessineChiffre(16,22,score/1000);
+  DessineChiffre(16,23,(score/100)%100);
+  DessineChiffre(16,24,(score/10)%10);
+  DessineChiffre(16,25,score%10);
+  
+  
+  //attente du signal de pacman pour afficher le nouveau score
+  pthread_mutex_lock(&mutexScore);
+  while(MAJScore == false)
+  {
+    pthread_cond_wait(&condScore,&mutexScore);
+    DessineChiffre(16,22,score/1000);
+    DessineChiffre(16,23,(score/100)%100);
+    DessineChiffre(16,24,(score/10)%10);
+    DessineChiffre(16,25,score%10);
+    MAJScore = false;
+  }
+  pthread_mutex_unlock(&mutexScore);
+  
+  pthread_exit(0);
 
+}
 //*********************************************************************************************
 
 //handlers des signaux
