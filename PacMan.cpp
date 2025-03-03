@@ -38,7 +38,7 @@ typedef struct {
 } S_CASE;
 
 //variables Globales
-int dir, nbPacGom = 0, niveau = 1, delai = 300, score = 0, vies = 3;
+int dir = GAUCHE, nbPacGom = 0, niveau = 1, delai = 300, score = 0, vies = 3;
 S_CASE tab[NB_LIGNE][NB_COLONNE];
 bool MAJScore = false;
 int nbRouge = 0, nbVert = 0, nbMauve = 0, nbOrange = 0, mode = 1;
@@ -213,6 +213,14 @@ void* ThreadPacMan(void* p)
   sigaddset(&mask, SIGUSR2);
   int l = LENTREE, c = CENTREE, newL, newC;
 
+  // Routine de nettoyage pour déverrouiller les mutex
+  auto cleanup = [](void* arg) {
+    pthread_mutex_unlock(&mutexTab);
+    pthread_mutex_unlock(&mutexDelai);
+  };
+
+  pthread_cleanup_push(cleanup, NULL);
+
   while (1)
   {
     //section critique direction et tableau tab
@@ -249,9 +257,6 @@ void* ThreadPacMan(void* p)
         pthread_mutex_unlock(&mutexScore);
         pthread_cond_signal(&condNbPacGom);
         pthread_cond_signal(&condScore);
-
-        
-
       }
       else if(tab[l][c].presence == SUPERPACGOM)
       {
@@ -265,7 +270,6 @@ void* ThreadPacMan(void* p)
         pthread_mutex_unlock(&mutexScore);
         pthread_cond_signal(&condNbPacGom);
         pthread_cond_signal(&condScore);
-
       }
       else if(tab[l][c].presence == BONUS)
       {
@@ -274,7 +278,6 @@ void* ThreadPacMan(void* p)
         printf("Score: %d\n",score);
         pthread_mutex_unlock(&mutexScore);
         pthread_cond_signal(&condScore);
-
       }
     }
     pthread_mutex_lock(&mutexTab);
@@ -291,10 +294,10 @@ void* ThreadPacMan(void* p)
     Attente(delai);
     pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
     pthread_mutex_unlock(&mutexDelai);
-    
   }
-  pthread_exit(0);
 
+  pthread_cleanup_pop(0);
+  pthread_exit(0);
 }
 void* ThreadEvent(void* p)
 {
@@ -447,7 +450,7 @@ void* ThreadBonus(void* p)
       setTab(i,j,BONUS);
       pthread_mutex_unlock(&mutexTab);
       DessineBonus(i, j);
-      Attente(10000);
+      Attente(1000);
 
       if(tab[i][j].presence == BONUS)
       {
@@ -565,13 +568,18 @@ void* ThreadFantome(void* p)
       DessineFantome(fantome->L, fantome->C, fantome->couleur, dir);
       pthread_mutex_unlock(&mutexTab);
     }
+    else if(vies == 0)
+    {
+      pthread_mutex_lock(&mutexVies);
+      while(vies == 0) pthread_cond_wait(&condVies,&mutexVies);
+      pthread_mutex_unlock(&mutexVies);
+    
+    }
     else 
     {
       dir = rand() % 4 + 500000;
     
     }
-    
-
     // Attente avant le prochain déplacement
     pthread_mutex_lock(&mutexDelai);
     int attente = (5 * delai) / 3;
@@ -605,7 +613,9 @@ void* ThreadVies(void* p)
   DessineChiffre(18,22,vies);
   DessineGameOver(9,4);
   
-
+  pthread_mutex_lock(&mutexVies);
+  pthread_mutex_unlock(&mutexVies);
+  pthread_cond_signal(&condVies);
   pthread_exit(0);
 
 }
