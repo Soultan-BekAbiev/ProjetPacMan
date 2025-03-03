@@ -216,11 +216,11 @@ void* ThreadPacMan(void* p)
   while (1)
   {
     //section critique direction et tableau tab
-    pthread_mutex_lock(&mutexTab);
     pthread_sigmask(SIG_BLOCK, &mask, NULL);
-
+    pthread_mutex_lock(&mutexTab);
     setTab(l, c);
     EffaceCarre(l, c);
+    pthread_mutex_unlock(&mutexTab);
 
     //on verifie la nouvelle position avec la présence d'un mur
     newL = l;
@@ -277,7 +277,7 @@ void* ThreadPacMan(void* p)
 
       }
     }
-    
+    pthread_mutex_lock(&mutexTab);
     setTab(l, c, PACMAN, pthread_self());
     pthread_mutex_unlock(&mutexTab);
     pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
@@ -336,7 +336,6 @@ void* ThreadEvent(void* p)
 }
 void* ThreadPacGom(void* p)
 {
-  pthread_mutex_lock(&mutexTab);
 
   do
   {
@@ -352,7 +351,10 @@ void* ThreadPacGom(void* p)
           if((i == 15 && j == 8) || (i == 8 && j == 8) || (i == 9 && j == 8));
           else
           {
+            pthread_mutex_lock(&mutexTab);
             setTab(i,j,PACGOM);
+            pthread_mutex_unlock(&mutexTab);
+
             DessinePacGom(i, j);
             pthread_mutex_lock(&mutexNbPacGom);
             nbPacGom++;
@@ -367,16 +369,17 @@ void* ThreadPacGom(void* p)
     DessineChiffre(12,23,(nbPacGom/10)%10);
     DessineChiffre(12,24,nbPacGom%10);
 
-
+    pthread_mutex_lock(&mutexTab);
     setTab(2,1,SUPERPACGOM);
     setTab(2,15,SUPERPACGOM);
     setTab(15,1,SUPERPACGOM);
     setTab(15,15,SUPERPACGOM);
+    pthread_mutex_unlock(&mutexTab);
+
     DessineSuperPacGom(2,1);
     DessineSuperPacGom(2,15);
     DessineSuperPacGom(15,1);
     DessineSuperPacGom(15,15);
-    pthread_mutex_unlock(&mutexTab);
     
     //attente du signal de pacman pour afficher le nbPacGom restant
     pthread_mutex_lock(&mutexNbPacGom);
@@ -440,10 +443,19 @@ void* ThreadBonus(void* p)
     //on place le bonus sur une case vide de maniere random
     if(tab[i = rand()%22][j = rand()%18].presence == 0)
     {
+      pthread_mutex_lock(&mutexTab);
       setTab(i,j,BONUS);
+      pthread_mutex_unlock(&mutexTab);
       DessineBonus(i, j);
       Attente(10000);
-      if(tab[i][j].presence == BONUS) setTab(i,j,VIDE);
+
+      if(tab[i][j].presence == BONUS)
+      {
+        pthread_mutex_lock(&mutexTab);
+        setTab(i,j,VIDE);
+        pthread_mutex_unlock(&mutexTab);
+
+      }
     }
   
   }
@@ -463,6 +475,7 @@ void* ThreadCompteurFantome(void* p)
       pthread_cond_wait(&condNbFantomes, &mutexNbFantomes);
 
     }
+    pthread_mutex_unlock(&mutexNbFantomes);
     S_FANTOME* fantome = (S_FANTOME*)malloc(sizeof(S_FANTOME));
     fantome->L = 9;
     fantome->C = 8;
@@ -478,7 +491,6 @@ void* ThreadCompteurFantome(void* p)
 
     i++;
     if(i == 8) i = 0;
-    pthread_mutex_unlock(&mutexNbFantomes);
 
     
 
@@ -499,10 +511,8 @@ void* ThreadFantome(void* p)
   printf("ligne = %d et colone du fantome de couleur : %d\n",fantome->L,fantome->C,fantome->couleur);
   int dir = HAUT;
   pthread_mutex_lock(&mutexTab);
-  
   setTab(fantome->L, fantome->C, FANTOME, pthread_self());
   DessineFantome(fantome->L, fantome->C, fantome->couleur, dir);
-  
   pthread_mutex_unlock(&mutexTab);
   
   
@@ -519,21 +529,26 @@ void* ThreadFantome(void* p)
     else if (dir == BAS) newL++;
     else if (dir == GAUCHE) newC--;
     else if (dir == DROITE) newC++;
-    pthread_mutex_lock(&mutexTab);
 
     
     if (tab[newL][newC].presence != MUR && tab[newL][newC].presence != FANTOME)
     {
       if(tab[newL][newC].presence == PACMAN)
       {
+        pthread_mutex_lock(&mutexTab);
+
         pthread_cancel(tab[newL][newC].tid);
         printf("PACMAN a été tué !!\n");
         tab[newL][newC].presence = VIDE;
+        pthread_mutex_unlock(&mutexTab);
         
       }
+      pthread_mutex_lock(&mutexTab);
       setTab(fantome->L, fantome->C);
       EffaceCarre(fantome->L,fantome->C);
       setTab(fantome->L,fantome->C,fantome->cache);
+      pthread_mutex_unlock(&mutexTab);
+
       switch(fantome->cache)
       {
         case PACGOM: DessinePacGom(fantome->L,fantome->C); break;
@@ -545,28 +560,16 @@ void* ThreadFantome(void* p)
       fantome->cache = tab[newL][newC].presence;
       fantome->L = newL;
       fantome->C = newC;
+      pthread_mutex_lock(&mutexTab);
       setTab(fantome->L, fantome->C, FANTOME, pthread_self());
       DessineFantome(fantome->L, fantome->C, fantome->couleur, dir);
-      
-    }
-    else if(vies == 0)
-    {
-      pthread_mutex_lock(&mutexVies);
-      while(vies == 0)
-      {
-        pthread_cond_wait(&condVies,&mutexVies);
-      }
-      pthread_mutex_unlock(&mutexVies);
-    
+      pthread_mutex_unlock(&mutexTab);
     }
     else 
     {
       dir = rand() % 4 + 500000;
     
     }
-    
-    
-    pthread_mutex_unlock(&mutexTab);
     
 
     // Attente avant le prochain déplacement
