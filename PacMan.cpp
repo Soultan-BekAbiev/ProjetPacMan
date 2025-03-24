@@ -42,7 +42,7 @@ int dir = GAUCHE, nbPacGom = 0, niveau = 1, delai = 300, score = 0, vies = 3;
 S_CASE tab[NB_LIGNE][NB_COLONNE];
 bool MAJScore = false;
 int nbRouge = 0, nbVert = 0, nbMauve = 0, nbOrange = 0, mode = 1;
-
+bool TimeOutRunning = false;
 //Threads,mutex et variables de condition
 pthread_mutex_t mutexDelai = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexTab = PTHREAD_MUTEX_INITIALIZER;
@@ -50,14 +50,15 @@ pthread_mutex_t mutexNbPacGom = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexScore = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexNbFantomes = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutexVies = PTHREAD_MUTEX_INITIALIZER;
-
+pthread_mutex_t mutexMode = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutexDir = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t condNbFantomes = PTHREAD_COND_INITIALIZER;
 pthread_cond_t condNbPacGom = PTHREAD_COND_INITIALIZER;
 pthread_cond_t condScore = PTHREAD_COND_INITIALIZER;
 pthread_cond_t condVies = PTHREAD_COND_INITIALIZER;
 
 pthread_t tidPacMan, tidEvent, tidPacGom,
-tidScore, tidBonus, tidCompteur,tidFantome[8], tidVies;
+tidScore, tidBonus, tidCompteur,tidFantome[8], tidVies, tidTimeOut;
 void* ThreadPacMan(void* p);
 void* ThreadEvent(void* p);
 void* ThreadPacGom(void* p);
@@ -66,19 +67,22 @@ void* ThreadBonus(void* p);
 void* ThreadCompteurFantome(void* p);
 void* ThreadFantome(void* p);
 void* ThreadVies(void* p);
+void* ThreadTimeOut(void* p);
 
 pthread_key_t keyFantome;
 //Fonctions
 void DessineGrilleBase();
 void Attente(int milli);
 void setTab(int l, int c, int presence = VIDE, pthread_t tid = 0);
-
+void MangerSuperPacGom();
+void FantomeComestible(S_FANTOME* fantome);
 //Handlers de signaux
 void handler_SIGINT(int sig);
 void handler_SIGHUP(int sig);
 void handler_SIGUSR1(int sig);
 void handler_SIGUSR2(int sig);
-
+void handler_SIGCHLD(int sig);
+void handler_SIGALRM(int sig);
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 int main(int argc,char* argv[])
 {
@@ -105,6 +109,20 @@ int main(int argc,char* argv[])
   sigAct.sa_handler = handler_SIGUSR2;
   sigaction(SIGUSR2, &sigAct, NULL);
 
+  sigAct.sa_flags = 0;
+  sigemptyset(&sigAct.sa_mask);
+  sigaddset(&mask,SIGCHLD);
+  sigAct.sa_handler = handler_SIGCHLD;
+  sigaction(SIGCHLD, &sigAct, NULL);
+
+  sigAct.sa_flags = 0;
+  sigemptyset(&sigAct.sa_mask);
+  sigaddset(&mask, SIGALRM);
+  sigAct.sa_handler = handler_SIGALRM;
+  sigaction(SIGALRM, &sigAct, NULL);
+
+  sigprocmask(SIG_BLOCK, &mask, NULL);
+  
   pthread_key_create(&keyFantome,NULL);
 
   srand((unsigned)time(NULL));
@@ -201,6 +219,45 @@ void DessineGrilleBase() {
 
 //*********************************************************************************************
 
+void MangerSuperPacGom()
+{
+  pthread_mutex_lock(&mutexScore);
+  pthread_mutex_lock(&mutexNbPacGom);
+  score += 5;
+  nbPacGom--;
+  pthread_mutex_unlock(&mutexNbPacGom);
+  pthread_mutex_unlock(&mutexScore);
+  pthread_cond_signal(&condNbPacGom);
+  pthread_cond_signal(&condScore);
+  
+  pthread_mutex_lock(&mutexMode);
+  mode = 2;
+  pthread_mutex_unlock(&mutexMode);
+  
+  int* tempsRestant = (int*)malloc(sizeof(int));
+  
+
+  *tempsRestant = 0;  
+
+  if(TimeOutRunning)
+  {
+    *tempsRestant = alarm(0); // Sauvegarde du temps restant
+    printf("temps restant a ajouter au timeout: %d seconde\n", *tempsRestant);
+    pthread_kill(tidTimeOut, SIGQUIT);
+  }
+
+  pthread_create(&tidTimeOut, NULL, ThreadTimeOut, (void*)tempsRestant);
+  printf("Le nouveau timeout a ete cree avec %d secondes restantes\n", *tempsRestant);
+  
+  
+}
+
+
+void FantomeComestible(S_FANTOME* fantome)
+{
+}
+//*********************************************************************************************
+
 void* ThreadPacMan(void* p)
 {
   //on arme les signaux pour les déplacements
@@ -221,6 +278,7 @@ void* ThreadPacMan(void* p)
 
   pthread_cleanup_push(cleanup, NULL);
 
+
   while (1)
   {
     //section critique direction et tableau tab
@@ -228,8 +286,9 @@ void* ThreadPacMan(void* p)
     pthread_mutex_lock(&mutexTab);
     setTab(l, c);
     EffaceCarre(l, c);
-    pthread_mutex_unlock(&mutexTab);
 
+
+    
     //on verifie la nouvelle position avec la présence d'un mur
     newL = l;
     newC = c;
@@ -239,6 +298,16 @@ void* ThreadPacMan(void* p)
     else if (dir == HAUT) newL--;
     else if (dir == BAS) newL++;
     
+    if(l == 9 && c == 0 && dir == GAUCHE)
+    {
+      newL = 9; 
+      newC = 16;
+    }
+    else if(l == 9 && c == 16 && dir == DROITE)
+    {
+      newL = 9; 
+      newC = 0;
+    }
     if (tab[newL][newC].presence != MUR)
     { 
       l = newL;
@@ -260,16 +329,7 @@ void* ThreadPacMan(void* p)
       }
       else if(tab[l][c].presence == SUPERPACGOM)
       {
-        pthread_mutex_lock(&mutexScore);
-        pthread_mutex_lock(&mutexNbPacGom);
-        score = score + 5;
-        nbPacGom--;
-        printf("Score: %d\n",score);
-        printf("nb PacGom: %d\n",nbPacGom);
-        pthread_mutex_unlock(&mutexNbPacGom);
-        pthread_mutex_unlock(&mutexScore);
-        pthread_cond_signal(&condNbPacGom);
-        pthread_cond_signal(&condScore);
+        MangerSuperPacGom();
       }
       else if(tab[l][c].presence == BONUS)
       {
@@ -278,9 +338,16 @@ void* ThreadPacMan(void* p)
         printf("Score: %d\n",score);
         pthread_mutex_unlock(&mutexScore);
         pthread_cond_signal(&condScore);
+        
+      }
+      else if(tab[l][c].presence == FANTOME)
+      {
+        setTab(l, c, VIDE, 0);   
+        EffaceCarre(l, c); 
+        pthread_mutex_unlock(&mutexTab);
+        pthread_exit(0);
       }
     }
-    pthread_mutex_lock(&mutexTab);
     setTab(l, c, PACMAN, pthread_self());
     pthread_mutex_unlock(&mutexTab);
     pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
@@ -290,7 +357,6 @@ void* ThreadPacMan(void* p)
     //section critique Attente et variable global delai
     pthread_mutex_lock(&mutexDelai);
     pthread_sigmask(SIG_BLOCK, &mask, NULL);
-    printf("Attente de %d millisecondes...\n", delai);
     Attente(delai);
     pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
     pthread_mutex_unlock(&mutexDelai);
@@ -342,6 +408,7 @@ void* ThreadPacGom(void* p)
 
   do
   {
+    pthread_mutex_lock(&mutexTab);
     
     DessineChiffre(14,22,niveau);
 
@@ -349,14 +416,12 @@ void* ThreadPacGom(void* p)
     {
       for(int j = 0; j < 17; j++)
       {
-        if(tab[i][j].presence == 0)
+        if(tab[i][j].presence == VIDE || tab[i][j].presence == FANTOME)
         {
           if((i == 15 && j == 8) || (i == 8 && j == 8) || (i == 9 && j == 8));
           else
           {
-            pthread_mutex_lock(&mutexTab);
             setTab(i,j,PACGOM);
-            pthread_mutex_unlock(&mutexTab);
 
             DessinePacGom(i, j);
             pthread_mutex_lock(&mutexNbPacGom);
@@ -367,6 +432,8 @@ void* ThreadPacGom(void* p)
         }
       }
     }
+    pthread_mutex_unlock(&mutexTab);
+
     printf("nb PacGom: %d\n",nbPacGom);
     DessineChiffre(12,22,nbPacGom/100);
     DessineChiffre(12,23,(nbPacGom/10)%10);
@@ -399,6 +466,9 @@ void* ThreadPacGom(void* p)
     //on incrémente le niveau de difficulté
     niveau++;
     DessineChiffre(14,22,niveau);
+
+    
+
     pthread_mutex_lock(&mutexDelai);
     delai = delai/2;
     pthread_mutex_unlock(&mutexDelai);
@@ -412,7 +482,7 @@ void* ThreadScore(void* p)
 {
   //affichage du score 0 au lancement
   DessineChiffre(16,22,score/1000);
-  DessineChiffre(16,23,(score/100)%100);
+  DessineChiffre(16,23,(score/100)%10);
   DessineChiffre(16,24,(score/10)%10);
   DessineChiffre(16,25,score%10);
   
@@ -423,7 +493,7 @@ void* ThreadScore(void* p)
   {
     pthread_cond_wait(&condScore,&mutexScore);
     DessineChiffre(16,22,score/1000);
-    DessineChiffre(16,23,(score/100)%100);
+    DessineChiffre(16,23,(score/100)%10);
     DessineChiffre(16,24,(score/10)%10);
     DessineChiffre(16,25,score%10);
     MAJScore = false;
@@ -450,12 +520,13 @@ void* ThreadBonus(void* p)
       setTab(i,j,BONUS);
       pthread_mutex_unlock(&mutexTab);
       DessineBonus(i, j);
-      Attente(1000);
+      Attente(10000);
 
       if(tab[i][j].presence == BONUS)
       {
         pthread_mutex_lock(&mutexTab);
         setTab(i,j,VIDE);
+        EffaceCarre(i,j);
         pthread_mutex_unlock(&mutexTab);
 
       }
@@ -468,7 +539,7 @@ void* ThreadBonus(void* p)
 
 void* ThreadCompteurFantome(void* p)
 { 
-  int i = 0;
+  int i = 0, niv = niveau;
   while(1)
   {
 
@@ -489,14 +560,20 @@ void* ThreadCompteurFantome(void* p)
     else if (nbMauve < 2) { fantome->couleur = MAUVE; nbMauve++; }
     else if (nbOrange < 2) { fantome->couleur = ORANGE; nbOrange++; }
 
-    pthread_create(&tidFantome[i], NULL, ThreadFantome, (void*)fantome);
-    printf("Création du fantôme de couleur %d\n", fantome->couleur);
+    pthread_mutex_lock(&mutexTab);
+    if(tab[fantome->L][fantome->C].presence == VIDE)
+    {
+      pthread_create(&tidFantome[i], NULL, ThreadFantome, (void*)fantome);
+      printf("Création du fantôme de couleur %d\n", fantome->couleur);
+    }
+    pthread_mutex_unlock(&mutexTab);
+
+    
 
     i++;
     if(i == 8) i = 0;
 
-    
-
+   
     
   }
     
@@ -512,18 +589,22 @@ void* ThreadFantome(void* p)
   // Associer la structure fantôme à la clé spécifique du thread
   pthread_setspecific(keyFantome, (void*)fantome);
   printf("ligne = %d et colone du fantome de couleur : %d\n",fantome->L,fantome->C,fantome->couleur);
+  pthread_mutex_lock(&mutexDir);
   int dir = HAUT;
+  pthread_mutex_unlock(&mutexDir);
+
   pthread_mutex_lock(&mutexTab);
   setTab(fantome->L, fantome->C, FANTOME, pthread_self());
   DessineFantome(fantome->L, fantome->C, fantome->couleur, dir);
   pthread_mutex_unlock(&mutexTab);
   
-  
+
   while (1)
   {
-
-    
-
+    if (mode == 2)
+    {
+      FantomeComestible(fantome);
+    }
     // Logique de déplacement
     int newL = fantome->L;
     int newC = fantome->C;
@@ -533,40 +614,48 @@ void* ThreadFantome(void* p)
     else if (dir == GAUCHE) newC--;
     else if (dir == DROITE) newC++;
 
+    pthread_mutex_lock(&mutexTab);
+
+    if(tab[newL][newC].presence == PACMAN && mode == 1)
+    {
+
+      pthread_cancel(tab[newL][newC].tid);
+      printf("PACMAN a été tué !!\n");
+      tab[newL][newC].presence = VIDE;
+      EffaceCarre(newL,newC);
+
+      
+    }
+    else if(tab[newL][newC].presence == PACMAN && mode == 2)
+    {
+      pthread_kill(tab[newL][newC].tid, SIGCHLD);
+    }
+    pthread_mutex_unlock(&mutexTab);
+
+    pthread_mutex_lock(&mutexTab);
     
     if (tab[newL][newC].presence != MUR && tab[newL][newC].presence != FANTOME)
     {
-      if(tab[newL][newC].presence == PACMAN)
-      {
-        pthread_mutex_lock(&mutexTab);
+      
 
-        pthread_cancel(tab[newL][newC].tid);
-        printf("PACMAN a été tué !!\n");
-        tab[newL][newC].presence = VIDE;
-        pthread_mutex_unlock(&mutexTab);
-        
-      }
-      pthread_mutex_lock(&mutexTab);
-      setTab(fantome->L, fantome->C);
+      setTab(fantome->L, fantome->C, fantome->cache, 0);
       EffaceCarre(fantome->L,fantome->C);
-      setTab(fantome->L,fantome->C,fantome->cache);
-      pthread_mutex_unlock(&mutexTab);
+      
 
       switch(fantome->cache)
       {
         case PACGOM: DessinePacGom(fantome->L,fantome->C); break;
         case SUPERPACGOM: DessineSuperPacGom(fantome->L,fantome->C); break;
         case BONUS: DessineBonus(fantome->L,fantome->C); break;
-        case VIDE: EffaceCarre(fantome->L, fantome->C);
       }
       
       fantome->cache = tab[newL][newC].presence;
       fantome->L = newL;
       fantome->C = newC;
-      pthread_mutex_lock(&mutexTab);
+      
       setTab(fantome->L, fantome->C, FANTOME, pthread_self());
       DessineFantome(fantome->L, fantome->C, fantome->couleur, dir);
-      pthread_mutex_unlock(&mutexTab);
+      
     }
     else if(vies == 0)
     {
@@ -577,18 +666,44 @@ void* ThreadFantome(void* p)
     }
     else 
     {
-      dir = rand() % 4 + 500000;
+      pthread_mutex_lock(&mutexDir);
+      int dirs[4] = {HAUT, BAS, GAUCHE, DROITE};
+      int dirsPossible[4];
+      int count = 0;
+
+      for (int i = 0; i < 4; i++)
+      {
+        int testL = fantome->L, testC = fantome->C;
+        switch (dirs[i])
+        {
+          case HAUT: testL--; break;
+          case BAS: testL++; break;
+          case GAUCHE: testC--; break;
+          case DROITE: testC++; break;
+        }
+        if (tab[testL][testC].presence != MUR && tab[testL][testC].presence != FANTOME)
+        {
+          dirsPossible[count++] = dirs[i];
+        }
+      }
+      if (count > 0) dir = dirsPossible[rand() % count]; // Choisit une direction aléatoire valide
+      pthread_mutex_unlock(&mutexDir);
+      
     
     }
+    pthread_mutex_unlock(&mutexTab);
+
     // Attente avant le prochain déplacement
+
     pthread_mutex_lock(&mutexDelai);
-    int attente = (5 * delai) / 3;
+    float *temps = (float*)malloc(sizeof(float));
+    *temps = (5 * delai) / 3;
     pthread_mutex_unlock(&mutexDelai);
-    Attente(attente);
+
+    Attente(*temps);
+    free(temps);
 
   }
-
-
 
   pthread_exit(0);
 }
@@ -619,10 +734,81 @@ void* ThreadVies(void* p)
   pthread_exit(0);
 
 }
+
+void* ThreadTimeOut(void* p)
+{
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGALRM);
+  sigaddset(&mask, SIGQUIT);
+
+  pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
+  printf("signal SIGALRM débloqué\n");
+  
+  TimeOutRunning = true;
+  int tempsRestant = *(int*)p;
+  
+  int tempsAleatoire = (rand() % 8 + 8);
+  printf("(ThreadTimeOut) temps aléatoire : %d\n", tempsAleatoire);
+  
+  tempsAleatoire = tempsAleatoire + tempsRestant;
+  printf("(ThreadTimeOut) temps aléatoire + temps restant : %d\n", tempsAleatoire);
+  
+  free(p);  
+
+  
+  alarm(tempsAleatoire);
+  printf("alarm fait normalement\n");
+  pause();
+
+  printf("signal SIGALRM reçu\n");
+  TimeOutRunning = false;
+    
+  pthread_exit(0);
+}
 //*********************************************************************************************
 
 //handlers des signaux
-void handler_SIGINT(int sig) { dir = GAUCHE; }
-void handler_SIGHUP(int sig) { dir = DROITE; }
-void handler_SIGUSR1(int sig) { dir = HAUT; }
-void handler_SIGUSR2(int sig) { dir = BAS; }
+void handler_SIGINT(int sig)
+{
+  dir = GAUCHE;
+
+}
+void handler_SIGHUP(int sig)
+{
+  dir = DROITE;
+
+}
+void handler_SIGUSR1(int sig)
+{
+  dir = HAUT;
+
+}
+void handler_SIGUSR2(int sig)
+{
+  dir = BAS;
+
+}
+void handler_SIGCHLD(int sig)
+{
+  S_FANTOME* fantome = (S_FANTOME*)pthread_getspecific(keyFantome);
+  pthread_mutex_lock(&mutexScore);
+  score += 50;
+  if (fantome->cache == PACGOM) score += 1;
+  if (fantome->cache == SUPERPACGOM) score += 5;
+  pthread_mutex_unlock(&mutexScore);
+  pthread_cond_signal(&condScore);
+  
+  pthread_exit(NULL);
+}
+
+void handler_SIGALRM(int sig)
+{
+  printf("SIGALRM reçu dans le handler\n");
+
+  pthread_mutex_lock(&mutexMode);
+  mode = 1;
+  printf("mode repasse a 1\n");
+  pthread_mutex_unlock(&mutexMode);
+
+}
