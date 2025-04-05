@@ -484,23 +484,18 @@ void* ThreadPacGom(void* p)
       {
         if(tab[i][j].presence == FANTOME)
         {
+          pthread_kill(tab[i][j].tid, SIGQUIT);
+          pthread_mutex_lock(&mutexTab);
           setTab(i,j);
           EffaceCarre(i,j);
-          pthread_mutex_lock(&mutexTab);
-          pthread_kill(tab[i][j].tid, SIGQUIT);
           pthread_mutex_unlock(&mutexTab);
         }
+
       }
     }
-    
-    pthread_mutex_lock(&mutexNbFantomes);
-    nbMauve = 0;
-    nbOrange = 0;
-    nbRouge = 0;
-    nbVert = 0;
-    pthread_mutex_unlock(&mutexNbFantomes);
-    pthread_cond_signal(&condNbFantomes);
-
+    pthread_mutex_lock(&mutexMode);
+    mode = 1;
+    pthread_mutex_unlock(&mutexMode);
 
     pthread_mutex_lock(&mutexDelai);
     delai = delai/2;
@@ -574,9 +569,8 @@ void* ThreadCompteurFantome(void* p)
 { 
   while(1)
   {
-    
-    printf("Mode rétabli, reprise de la création des fantômes\n");
     pthread_mutex_lock(&mutexNbFantomes);
+    
     while (nbRouge == 2 && nbVert == 2 && nbMauve == 2 && nbOrange == 2) {
       
       pthread_cond_wait(&condNbFantomes, &mutexNbFantomes);
@@ -585,11 +579,12 @@ void* ThreadCompteurFantome(void* p)
     pthread_mutex_lock(&mutexMode);
     while(mode == 2)pthread_cond_wait(&condMode, &mutexMode);
     pthread_mutex_unlock(&mutexMode);
+    
     S_FANTOME* fantome = (S_FANTOME*)malloc(sizeof(S_FANTOME));
     fantome->L = 9;
     fantome->C = 8;
     fantome->cache = VIDE;
-  
+
     if (nbRouge < 2) { fantome->couleur = ROUGE; nbRouge++; }
     else if (nbVert < 2) { fantome->couleur = VERT; nbVert++; }
     else if (nbMauve < 2) { fantome->couleur = MAUVE; nbMauve++; }
@@ -859,32 +854,38 @@ void handler_SIGQUIT(int sig)
   pthread_exit(NULL);
 }
 
-void cleanupFantome(void* arg) {
-    S_FANTOME* fantome = (S_FANTOME*)pthread_getspecific(keyFantome);
-    if (!fantome) return;
+void cleanupFantome(void* arg)
+{
+  S_FANTOME* fantome = (S_FANTOME*)pthread_getspecific(keyFantome);
+  if (!fantome) return;
 
+  if(mode == 2)
+  {
     pthread_mutex_lock(&mutexScore);
     score += 50 + fantome->cache;
     MAJScore = true;
     pthread_mutex_unlock(&mutexScore);
     pthread_cond_signal(&condScore);
 
-    if (fantome->cache == PACGOM || fantome->cache == SUPERPACGOM) {
-        pthread_mutex_lock(&mutexNbPacGom);
-        nbPacGom--;
-        pthread_mutex_unlock(&mutexNbPacGom);
-        pthread_cond_signal(&condNbPacGom);
-    }
+  }
+  
 
-    pthread_mutex_lock(&mutexNbFantomes);
-    switch (fantome->couleur) {
-        case ROUGE: nbRouge--; break;
-        case VERT: nbVert--; break;
-        case MAUVE: nbMauve--; break;
-        case ORANGE: nbOrange--; break;
-    }
-    pthread_mutex_unlock(&mutexNbFantomes);
-    pthread_cond_signal(&condNbFantomes);
+  if (fantome->cache == PACGOM || fantome->cache == SUPERPACGOM) {
+      pthread_mutex_lock(&mutexNbPacGom);
+      nbPacGom--;
+      pthread_mutex_unlock(&mutexNbPacGom);
+      pthread_cond_signal(&condNbPacGom);
+  }
 
-    free(fantome);
+  pthread_mutex_lock(&mutexNbFantomes);
+  switch (fantome->couleur) {
+      case ROUGE: nbRouge--; break;
+      case VERT: nbVert--; break;
+      case MAUVE: nbMauve--; break;
+      case ORANGE: nbOrange--; break;
+  }
+  pthread_mutex_unlock(&mutexNbFantomes);
+  pthread_cond_signal(&condNbFantomes);
+
+  free(fantome);
 }
